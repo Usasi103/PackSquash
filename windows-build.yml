@@ -1,0 +1,89 @@
+name: Windows build
+
+# Trimmed-down version of ci.yml that builds only the Windows CLI executable.
+# The upstream workflow also targets Linux, macOS and Docker, and runs its x64
+# Linux legs and static analysis on Blacksmith runners, which are not available
+# on forks: those jobs stay queued forever. Everything unrelated to producing
+# packsquash.exe has been dropped here.
+
+on:
+  # Adds a "Run workflow" button in the Actions tab. Only shows up once this
+  # file is present on the repository's default branch.
+  workflow_dispatch:
+  push:
+    branches:
+      - "*"
+    paths-ignore:
+      - docs/wiki/**
+
+env:
+  # Not defined on forks, as the upstream secret is not shared with them. obfstr
+  # reads this with option_env!, so an empty value does not break the build: it
+  # just yields a fixed, deterministic obfuscation seed instead of a private one.
+  # Define a CONST_RANDOM_SEED secret in this repository to get a private seed.
+  OBFSTR_SEED: ${{ secrets.CONST_RANDOM_SEED }}
+
+jobs:
+  build:
+    name: Build Windows CLI executable
+
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    env:
+      TARGET: x86_64-pc-windows-gnu
+
+      # nextest requires this on Windows to pick the intended GNU toolchain
+      RUSTUP_TOOLCHAIN: nightly-x86_64-pc-windows-gnu
+
+      # Rust stdlib default backtrace feature doesn't actually work because our
+      # release executables are stripped, so skipping it shaves off quite some KiB
+      OPTIMIZED_RELEASE_BUILD_FLAGS: -Z build-std -Z build-std-features=panic-unwind
+
+    steps:
+      - name: 📥 Checkout source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0 # Keep the commit history for proper version information
+
+      - name: 🧰 Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+          target: ${{ env.TARGET }}
+          components: rust-src # Required by -Z build-std
+          # Keep the action from forcing its own RUSTFLAGS, which would shadow
+          # the ones this project sets in .cargo/config.toml
+          rustflags: ""
+
+      - name: 🧰 Install nextest
+        shell: bash
+        run: >
+          curl -fsSL 'https://get.nexte.st/latest/x86_64-pc-windows-msvc.tar.gz'
+          | tar -xzf - -C ~/.cargo/bin
+
+      # Required for the build script to be able to gather version information from Git
+      - name: 📏 Allow Git commands to run in the container directory
+        shell: bash
+        run: git config --global --add safe.directory "$PWD"
+
+      # Drop this step if you only want the executable and don't care for the
+      # extra ~15 minutes it takes to compile and run the test suite
+      - name: ✔️ Run tests
+        env:
+          CARGO_BUILD_TARGET: ${{ env.TARGET }}
+          NEXTEST_PROFILE: ci
+        run: |
+          cargo nextest run --workspace --status-level all --release --lib --bins --tests --examples --no-fail-fast
+          cargo test --doc --workspace --release
+
+      - name: 🔨 Build with optimized standard library
+        run: cargo build --target ${{ env.TARGET }} --release ${{ env.OPTIMIZED_RELEASE_BUILD_FLAGS }}
+
+      - name: 📤 Upload CLI binary
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: PackSquash CLI executable (${{ env.TARGET }})
+          path: |
+            target/${{ env.TARGET }}/release/packsquash*
+            !target/${{ env.TARGET }}/release/packsquash.d
