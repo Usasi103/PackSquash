@@ -33,8 +33,13 @@ jobs:
     env:
       TARGET: x86_64-pc-windows-gnu
 
-      # nextest requires this on Windows to pick the intended GNU toolchain
-      RUSTUP_TOOLCHAIN: nightly-x86_64-pc-windows-gnu
+      # The rust-toolchain file asks for a bare, unpinned "nightly", so a build
+      # run today does not use the same compiler upstream last built with. This
+      # pins the date to the one behind the last green upstream CI run, which
+      # rules out nightly regressions as a cause of build failures. Bump or drop
+      # the date (leaving just "nightly-x86_64-pc-windows-gnu") to build with the
+      # current nightly instead.
+      RUSTUP_TOOLCHAIN: nightly-2026-08-29-x86_64-pc-windows-gnu
 
       # Rust stdlib default backtrace feature doesn't actually work because our
       # release executables are stripped, so skipping it shaves off quite some KiB
@@ -56,27 +61,17 @@ jobs:
           # the ones this project sets in .cargo/config.toml
           rustflags: ""
 
-      - name: 🧰 Install nextest
-        shell: bash
-        run: >
-          curl -fsSL 'https://get.nexte.st/latest/x86_64-pc-windows-msvc.tar.gz'
-          | tar -xzf - -C ~/.cargo/bin
-
       # Required for the build script to be able to gather version information from Git
       - name: 📏 Allow Git commands to run in the container directory
         shell: bash
         run: git config --global --add safe.directory "$PWD"
 
-      # Drop this step if you only want the executable and don't care for the
-      # extra ~15 minutes it takes to compile and run the test suite
-      - name: ✔️ Run tests
-        env:
-          CARGO_BUILD_TARGET: ${{ env.TARGET }}
-          NEXTEST_PROFILE: ci
-        run: |
-          cargo nextest run --workspace --status-level all --release --lib --bins --tests --examples --no-fail-fast
-          cargo test --doc --workspace --release
-
+      # The test suite is deliberately not run here. Beyond the time it takes,
+      # `cargo nextest run --all-targets` also compiles dev-dependencies and
+      # benchmarks (criterion, xz2 and friends) that the executable itself never
+      # links against, so a build break confined to those would fail this
+      # workflow for no good reason. nextest is not installed either, for the
+      # same reason. Run the upstream ci.yml if you want the tests.
       - name: 🔨 Build with optimized standard library
         run: cargo build --target ${{ env.TARGET }} --release ${{ env.OPTIMIZED_RELEASE_BUILD_FLAGS }}
 
